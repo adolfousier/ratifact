@@ -182,7 +182,7 @@ impl PopupState {
             PopupState::ConfirmAction { message, .. } => {
                 let popup_area = centered_rect(70, 35, area);
                 f.render_widget(Clear, popup_area);
-                let text = message.clone();
+                let text = format!("{}\n\nEnter: Confirm | Esc: Cancel", message);
                 let para = Paragraph::new(text)
                     .block(Block::default().title("⚠️ CONFIRM ACTION").borders(Borders::ALL).style(Style::default().fg(Color::Black).bg(Color::Yellow)).padding(Padding::new(2, 2, 1, 1)))
                     .style(Style::default().fg(Color::Black).bg(Color::Yellow));

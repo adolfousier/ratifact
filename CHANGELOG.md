@@ -5,12 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.15] - 2025-11-28
+
+### Added
+
+- **Justfile build system** - Replaced Makefile with just-rs for pure Rust task management
+
+### Changed
+
+- **Improved confirmation dialogs** - Now shows "Enter: Confirm | Esc: Cancel" instructions for clarity
+- **Better delete flow** - Deletion command now waits for completion before removing from UI to prevent false positives
+- **Enhanced charts synchronization** - Charts now filtered to show only artifacts in current artifacts list for accurate analysis
+- **Improved error handling** - Better feedback when sudo operations fail with appropriate error messages
+
+### Fixed
+
+- **Delete artifact race condition** - Artifact could appear deleted while still on disk; now waits for actual deletion confirmation
+- **UI clipping from sudo** - Suppressed sudo output to prevent "sudo: authenticate] password" messages from breaking TUI display
+- **Removed all print statements** - Eliminated all eprintln/println calls that could corrupt TUI rendering
+- **Clear all dialog appearing unexpectedly** - Global Shift+D shortcut now only triggers when no popups are open
+- **Password prompt blocking** - Fixed synchronous deletion blocking event loop when using sudo with password
+
+---
+
 ## [0.1.14] - 2025-11-03
 
 ### Added
 
 - **Uninstall scripts** - Cross-platform uninstall scripts for Linux, macOS, and Windows
-- **Uninstall target in Makefile** - `make uninstall` command to show uninstall instructions
+- **Uninstall target in Justfile** - `just uninstall` command to show uninstall instructions
 - **Uninstall documentation** - Added uninstall section to README with usage instructions
 
 ### Changed
@@ -77,7 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Removed unused methods `load_artifacts` and `load_history` from BuildLogger
 - Removed unused import `Row` from logger.rs
-- Updated Makefile to use `docker compose` instead of deprecated `docker-compose` command
+- Updated Justfile to use `docker compose` instead of deprecated `docker-compose` command
 
 ---
 
@@ -85,8 +108,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Automatic .env file generation in Makefile with random PostgreSQL password
-- PostgreSQL startup check and auto-start in Makefile run target
+- Automatic .env file generation in Justfile with random PostgreSQL password
+- PostgreSQL startup check and auto-start in Justfile run target
 - Sudo support for artifact deletion with password prompt
 - Artifact actions popup for delete/rebuild operations
 - Clear all builds feature with Shift+D shortcut
@@ -122,7 +145,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Rebuild Integration**: One-click rebuild for detected projects (Cargo, npm, etc.).
 - **PostgreSQL Database**: Uses PostgreSQL for storing build logs and metadata.
 - **Docker Support**: Includes compose.yml for easy PostgreSQL setup.
-- **Makefile**: Build system with targets for build, run, test, clean, etc.
+- **Justfile**: Build system with targets for build, run, test, clean, etc.
 - **Unit Tests**: Comprehensive tests for database, utilities, and core functionality.
 - **Modular Architecture**: Organized code in src/ with separate modules for DB, tracking, UI, config, and utils.
 

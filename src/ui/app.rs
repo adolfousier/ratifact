@@ -137,11 +137,6 @@ impl App {
                         // Terminal was resized, UI will redraw automatically on next loop
                     }
                     Event::Key(key) => {
-            // Global Shift+D for clear all builds
-            if key.code == KeyCode::Char('D') && key.modifiers.contains(KeyModifiers::SHIFT) {
-                self.popup_state = PopupState::new_clear_all_confirmation();
-                return;
-            }
             // Handle popup first
             if let Some(cmd) = self.popup_state.handle_key(&key) {
                 match cmd {
@@ -178,36 +173,44 @@ impl App {
                              if let Some(action) = self.pending_action.take() {
                                  if action == "delete" {
                                      let path = self.artifacts[self.selected].clone();
-                                     if self.delete_with_sudo(&path, Some(&value)) {
+                                     let password = value.clone();
+
+                                     // Try the deletion synchronously to check if it succeeds
+                                     if Self::delete_with_sudo_blocking(&path, Some(&password)) {
                                          self.artifacts.remove(self.selected);
                                          if self.selected >= self.artifacts.len() && self.selected > 0 {
                                              self.selected -= 1;
                                          }
-                                         // Update DB
+                                         // Update DB in background
                                          let pool = self.logger.pool.clone();
-                                         let _ = tokio::spawn(async move {
+                                         tokio::spawn(async move {
                                              let _ = sqlx::query("DELETE FROM builds WHERE artifact_path = $1").bind(&path).execute(&pool).await;
                                          });
-                                         self.popup_state = PopupState::Info { message: "Artifact deleted with sudo.".to_string() };
+                                         self.popup_state = PopupState::Info { message: "Artifact deleted successfully.".to_string() };
                                      } else {
-                                         self.popup_state = PopupState::Info { message: "Sudo delete failed.".to_string() };
+                                         self.popup_state = PopupState::Info { message: "Deletion failed - please check permissions or try again.".to_string() };
                                      }
                                  } else if action == "clear_all" {
                                      let failed_paths = self.pending_failed_paths.clone();
                                      self.pending_failed_paths.clear();
+                                     let password = value.clone();
+
                                      let mut all_success = true;
-                                     for path in failed_paths {
-                                         if !self.delete_with_sudo(&path, Some(&value)) {
+                                     for path in &failed_paths {
+                                         if !Self::delete_with_sudo_blocking(path, Some(&password)) {
                                              all_success = false;
                                          }
                                      }
+
                                      if all_success {
                                          self.artifacts.clear();
-                                         let _ = sqlx::query("DELETE FROM builds").execute(&self.logger.pool).await;
-                                         self.load_history().await;
-                                         self.popup_state = PopupState::Info { message: "All builds cleared with sudo.".to_string() };
+                                         let pool = self.logger.pool.clone();
+                                         tokio::spawn(async move {
+                                             let _ = sqlx::query("DELETE FROM builds").execute(&pool).await;
+                                         });
+                                         self.popup_state = PopupState::Info { message: "All builds cleared successfully.".to_string() };
                                      } else {
-                                         self.popup_state = PopupState::Info { message: "Some sudo deletes failed.".to_string() };
+                                         self.popup_state = PopupState::Info { message: "Some deletions failed - please check permissions.".to_string() };
                                      }
                                  }
                              }
@@ -271,6 +274,9 @@ impl App {
             } else if matches!(self.popup_state, PopupState::None) {
                 // Main keys only when no popup
                 match key.code {
+                    KeyCode::Char('D') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        self.popup_state = PopupState::new_clear_all_confirmation();
+                    },
                     KeyCode::Enter => {
                         if self.focused_panel == 0 {
                             self.popup_state = PopupState::new_artifact_actions();
@@ -661,11 +667,7 @@ impl App {
             return;
         }
         let path = self.artifacts[self.selected].clone();
-        // Check for unusual files (e.g., bundle or many binaries)
-        if self.has_unusual_files(&path) {
-            return;
-        }
-        // Try sudo -n first
+        // Try sudo -n first (no password required)
         if self.delete_with_sudo(&path, None) {
             self.artifacts.remove(self.selected);
             if self.selected >= self.artifacts.len() && self.selected > 0 {
@@ -736,9 +738,18 @@ impl App {
             .await
         {
             Ok(rows) => {
+                let artifacts_set: std::collections::HashSet<String> = self.artifacts.iter().cloned().collect();
                 self.chart_data = rows
                     .into_iter()
-                    .map(|row| (row.get(0), row.get::<i64, _>(1) as u64))
+                    .filter_map(|row| {
+                        let path: String = row.get(0);
+                        let size: u64 = row.get::<i64, _>(1) as u64;
+                        if artifacts_set.contains(&path) {
+                            Some((path, size))
+                        } else {
+                            None
+                        }
+                    })
                     .collect();
             }
             Err(_) => {
@@ -758,18 +769,6 @@ impl App {
         } else {
             "configured".to_string()
         }
-    }
-
-    fn has_unusual_files(&self, path: &str) -> bool {
-        if let Ok(entries) = std::fs::read_dir(path) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_lowercase();
-                if name.contains("bundle") || name.ends_with(".exe") || name.ends_with(".bin") {
-                    return true;
-                }
-            }
-        }
-        false
     }
 
     fn rebuild_selected(&mut self) {
@@ -820,6 +819,7 @@ impl App {
 
     fn delete_with_sudo(&self, path: &str, password: Option<&str>) -> bool {
         use std::process::Command;
+        use std::process::Stdio;
         let mut cmd = Command::new("sudo");
         if password.is_some() {
             cmd.arg("-S");
@@ -827,16 +827,66 @@ impl App {
             cmd.arg("-n");
         }
         cmd.arg("rm").arg("-rf").arg(path);
+
         if let Some(pwd) = password {
-            cmd.stdin(std::process::Stdio::piped());
-            let mut child = cmd.spawn().unwrap();
+            // With password - suppress all output
+            cmd.stdin(Stdio::piped());
+            cmd.stdout(Stdio::null());
+            cmd.stderr(Stdio::null());
+            let mut child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(_) => return false,
+            };
             if let Some(mut stdin) = child.stdin.take() {
                 use std::io::Write;
                 let _ = stdin.write_all(format!("{}\n", pwd).as_bytes());
             }
-            child.wait().unwrap().success()
+            match child.wait() {
+                Ok(status) => status.success(),
+                Err(_) => false,
+            }
         } else {
-            cmd.status().unwrap().success()
+            // Without password (sudo -n) - suppress output since we expect it to fail
+            cmd.stdout(Stdio::null());
+            cmd.stderr(Stdio::null());
+            match cmd.status() {
+                Ok(status) => status.success(),
+                Err(_) => false,
+            }
+        }
+    }
+
+    fn delete_with_sudo_blocking(path: &str, password: Option<&str>) -> bool {
+        use std::process::Command;
+        use std::process::Stdio;
+        let mut cmd = Command::new("sudo");
+        if password.is_some() {
+            cmd.arg("-S");
+        } else {
+            cmd.arg("-n");
+        }
+        cmd.arg("rm").arg("-rf").arg(path);
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
+        if let Some(pwd) = password {
+            cmd.stdin(Stdio::piped());
+            let mut child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(_) => return false,
+            };
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write;
+                let _ = stdin.write_all(format!("{}\n", pwd).as_bytes());
+            }
+            match child.wait() {
+                Ok(status) => status.success(),
+                Err(_) => false,
+            }
+        } else {
+            match cmd.status() {
+                Ok(status) => status.success(),
+                Err(_) => false,
+            }
         }
     }
 }

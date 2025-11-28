@@ -1,7 +1,7 @@
 [![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Ratatui](https://img.shields.io/badge/ratatui-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white)](https://ratatui.rs)
 [![Docker](https://img.shields.io/badge/docker-%23000000.svg?style=for-the-badge&logo=docker&logoColor=white)](https://docker.com)
-[![Make](https://img.shields.io/badge/Make-%23000000.svg?style=for-the-badge&logo=gnu&logoColor=white)](https://www.gnu.org/software/make/)
+[![Just](https://img.shields.io/badge/Just-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white)](https://just.systems)
 [![PostgreSQL](https://img.shields.io/badge/postgresql-%23000000.svg?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org)
 
 [![Ratifact](https://img.shields.io/badge/Ratifact-7f56da)](https://meetneura.ai) [![Powered by Neura AI](https://img.shields.io/badge/Powered%20by-Neura%20AI-7f56da)](https://meetneura.ai)
@@ -71,17 +71,17 @@ If you already have the prerequisites installed:
 git clone https://github.com/adolfousier/ratifact.git && cd ratifact && cargo build && ./target/debug/ratifact
 ```
 
-### Build with Make
+### Build with Just
 
-Use the provided Makefile for common tasks:
+Use the provided justfile for common tasks:
 
 ```bash
-make build    # Build the project
-make run      # Build and run
-make test     # Run tests
-make release  # Build release version
-make clean    # Clean artifacts
-make help     # Show all targets
+just build    # Build the project
+just run      # Build and run
+just test     # Run tests
+just release  # Build release version
+just clean    # Clean artifacts
+just help     # Show all targets
 ```
 
 ## How to Use It

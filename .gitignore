@@ -1,3 +1,4 @@
+.github/
 /target
 /docker/.env
 client/target

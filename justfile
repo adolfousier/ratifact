@@ -1,6 +1,4 @@
-# Makefile for Ratifact by Neura
-
-.PHONY: build run clean test check release help uninstall
+# Justfile for Ratifact by Neura
 
 # Build the project
 build:
@@ -8,26 +6,28 @@ build:
 
 # Build and run the project
 run: build
-	@echo "Checking for .env file..."
-	@if [ ! -f .env ]; then \
-		echo "Generating .env file..."; \
-		PASSWORD=$$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-16); \
-		echo "DATABASE_URL=postgres://ratifact:$$PASSWORD@localhost:25851/ratifact" > .env; \
-		echo "POSTGRES_USERNAME=ratifact" >> .env; \
-		echo "POSTGRES_PASSWORD=$$PASSWORD" >> .env; \
-		echo "DEBUG_LOGS_ENABLED=true" >> .env; \
-		echo ".env file generated with random password."; \
-	else \
-		echo ".env file already exists, skipping generation."; \
+	#!/bin/bash
+	set -e
+	echo "Checking for .env file..."
+	if [ ! -f .env ]; then
+		echo "Generating .env file..."
+		PASSWORD=$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-16)
+		echo "DATABASE_URL=postgres://ratifact:$PASSWORD@localhost:25851/ratifact" > .env
+		echo "POSTGRES_USERNAME=ratifact" >> .env
+		echo "POSTGRES_PASSWORD=$PASSWORD" >> .env
+		echo "DEBUG_LOGS_ENABLED=true" >> .env
+		echo ".env file generated with random password."
+	else
+		echo ".env file already exists, skipping generation."
 	fi
-	@echo "Checking PostgreSQL status..."
-	@if ss -tln | grep -q :25851; then \
-		echo "PostgreSQL port 25851 is in use, assuming running."; \
-	else \
-		echo "Starting PostgreSQL..."; \
-		docker compose up -d; \
+	echo "Checking PostgreSQL status..."
+	if ss -tln | grep -q :25851; then
+		echo "PostgreSQL port 25851 is in use, assuming running."
+	else
+		echo "Starting PostgreSQL..."
+		docker compose up -d
 	fi
-	@echo "Starting Ratifact application..."
+	echo "Starting Ratifact application..."
 	cargo run
 
 # Run tests
