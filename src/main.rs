@@ -1,3 +1,14 @@
+// The two backend features select mutually-exclusive implementations of
+// `get_database`, `establish_connection`, `create_tables` and `BuildLogger`;
+// enabling both would duplicate every pair (E0428), and enabling none leaves
+// the crate without them. Fail fast with a readable contract instead of a
+// wall of name collisions.
+#[cfg(all(feature = "sqlite", feature = "postgres"))]
+compile_error!("The `sqlite` and `postgres` features are mutually exclusive; enable exactly one.");
+
+#[cfg(not(any(feature = "sqlite", feature = "postgres")))]
+compile_error!("ratifact requires a database backend: `sqlite` (the default) or `postgres`.");
+
 mod config;
 mod db;
 mod tracking;
@@ -12,8 +23,6 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io::stdout;
 use ui::app::App;
 use utils::logger::log_to_file;
-
-
 
 #[cfg(test)]
 mod config_tests {

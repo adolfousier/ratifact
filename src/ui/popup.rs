@@ -2,11 +2,11 @@
 
 use ratatui::{
     Frame,
+    crossterm::event::KeyCode,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::Span,
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph},
-    crossterm::event::KeyCode,
 };
 
 pub enum PopupCommand {
@@ -23,17 +23,42 @@ pub enum PopupCommand {
 
 pub enum PopupState {
     None,
-    SettingsList { selected: usize },
-    Input { title: String, input: String },
-    DirBrowse { path: String, items: Vec<String>, selected: usize },
-    Logs { logs: std::sync::Arc<std::sync::Mutex<Vec<String>>> },
-    Scanning { logs: std::sync::Arc<std::sync::Mutex<Vec<String>>> },
-    ArtifactActions { selected: usize },
+    SettingsList {
+        selected: usize,
+    },
+    Input {
+        title: String,
+        input: String,
+    },
+    DirBrowse {
+        path: String,
+        items: Vec<String>,
+        selected: usize,
+    },
+    Logs {
+        logs: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    },
+    Scanning {
+        logs: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    },
+    ArtifactActions {
+        selected: usize,
+    },
     ClearAllConfirmation,
-    ConfirmAction { message: String, action: String },
-    Progress { message: String },
-    Info { message: String },
-    ExcludedPathsList { paths: Vec<String>, selected: usize },
+    ConfirmAction {
+        message: String,
+        action: String,
+    },
+    Progress {
+        message: String,
+    },
+    Info {
+        message: String,
+    },
+    ExcludedPathsList {
+        paths: Vec<String>,
+        selected: usize,
+    },
 }
 
 impl PopupState {
@@ -42,13 +67,20 @@ impl PopupState {
     }
 
     pub fn new_input(title: String, initial: String) -> Self {
-        PopupState::Input { title, input: initial }
+        PopupState::Input {
+            title,
+            input: initial,
+        }
     }
 
     pub fn new_dir_browse() -> Self {
         let path = "/".to_string();
         let items = get_dir_items(&path);
-        PopupState::DirBrowse { path, items, selected: 0 }
+        PopupState::DirBrowse {
+            path,
+            items,
+            selected: 0,
+        }
     }
 
     pub fn new_logs_popup(logs: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Self {
@@ -82,18 +114,28 @@ impl PopupState {
             PopupState::SettingsList { selected } => {
                 let popup_area = centered_rect(25, 30, area);
                 f.render_widget(Clear, popup_area);
-                let options = ["Retention Days", "Scan Path", "Automatic Removal", "Excluded Paths"];
+                let options = [
+                    "Retention Days",
+                    "Scan Path",
+                    "Automatic Removal",
+                    "Excluded Paths",
+                ];
                 let mut items = Vec::new();
                 for (i, &opt) in options.iter().enumerate() {
                     let style = if i == *selected {
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default()
                     };
                     items.push(ListItem::new(Span::styled(opt, style)));
                 }
-                let list = List::new(items)
-                    .block(Block::default().title("Settings (↑↓ Enter Esc)").borders(Borders::ALL));
+                let list = List::new(items).block(
+                    Block::default()
+                        .title("Settings (↑↓ Enter Esc)")
+                        .borders(Borders::ALL),
+                );
                 f.render_widget(list, popup_area);
             }
             PopupState::Input { title, input } => {
@@ -105,18 +147,23 @@ impl PopupState {
                     input.clone()
                 };
                 let text = format!("{}: {}", title, display_input);
-                let para = Paragraph::new(text)
-                    .block(Block::default().title("Edit (Enter: Apply, Esc: Cancel)").borders(Borders::ALL));
+                let para = Paragraph::new(text).block(
+                    Block::default()
+                        .title("Edit (Enter: Apply, Esc: Cancel)")
+                        .borders(Borders::ALL),
+                );
                 f.render_widget(para, popup_area);
                 // Cursor not implemented simply
             }
-            PopupState::DirBrowse { path, items, selected } => {
+            PopupState::DirBrowse {
+                path,
+                items,
+                selected,
+            } => {
                 let popup_area = centered_rect(50, 50, area);
                 f.render_widget(Clear, popup_area);
-                let list_items: Vec<ListItem> = items
-                    .iter()
-                    .map(|i| ListItem::new(i.as_str()))
-                    .collect();
+                let list_items: Vec<ListItem> =
+                    items.iter().map(|i| ListItem::new(i.as_str())).collect();
                 let list = List::new(list_items)
                     .block(Block::default().title(format!("Browse: {} (↑↓ Nav, Enter: Enter, s: Select, Space: Select Current, Esc: Cancel)", path)).borders(Borders::ALL))
                     .highlight_style(Style::default().bg(Color::Blue).fg(Color::White));
@@ -128,7 +175,16 @@ impl PopupState {
                 let popup_area = centered_rect(60, 40, area);
                 f.render_widget(Clear, popup_area);
                 let logs_guard = logs.lock().unwrap();
-                let logs_text = logs_guard.iter().rev().take(20).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+                let logs_text = logs_guard
+                    .iter()
+                    .rev()
+                    .take(20)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 let para = Paragraph::new(logs_text).block(
                     Block::default()
                         .title("📝 Logs")
@@ -141,14 +197,30 @@ impl PopupState {
                 let popup_area = centered_rect(60, 40, area);
                 f.render_widget(Clear, popup_area);
                 let logs_guard = logs.lock().unwrap();
-                let logs_text = logs_guard.iter().rev().take(20).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
-                let full_text = format!("Scanning for new artifacts\n\nPress any key to close\n\n{}", logs_text);
+                let logs_text = logs_guard
+                    .iter()
+                    .rev()
+                    .take(20)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let full_text = format!(
+                    "Scanning for new artifacts\n\nPress any key to close\n\n{}",
+                    logs_text
+                );
                 let para = Paragraph::new(full_text).block(
                     Block::default()
                         .title("🔍 Scanning for new artifacts")
                         .borders(Borders::ALL)
                         .padding(Padding::new(1, 1, 1, 0))
-                        .style(Style::default().bg(Color::Rgb(0, 100, 100)).fg(Color::White)),
+                        .style(
+                            Style::default()
+                                .bg(Color::Rgb(0, 100, 100))
+                                .fg(Color::White),
+                        ),
                 );
                 f.render_widget(para, popup_area);
             }
@@ -159,14 +231,23 @@ impl PopupState {
                 let mut items = Vec::new();
                 for (i, &opt) in options.iter().enumerate() {
                     let style = if i == *selected {
-                        Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Red)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(Color::Black).bg(Color::Red)
                     };
                     items.push(ListItem::new(Span::styled(opt, style)));
                 }
                 let list = List::new(items)
-                    .block(Block::default().title("⚠️ SELECT ACTION").borders(Borders::ALL).style(Style::default().fg(Color::Black).bg(Color::Red)).padding(Padding::new(2, 2, 1, 1)))
+                    .block(
+                        Block::default()
+                            .title("⚠️ SELECT ACTION")
+                            .borders(Borders::ALL)
+                            .style(Style::default().fg(Color::Black).bg(Color::Red))
+                            .padding(Padding::new(2, 2, 1, 1)),
+                    )
                     .style(Style::default().bg(Color::Red));
                 f.render_widget(list, popup_area);
             }
@@ -175,7 +256,13 @@ impl PopupState {
                 f.render_widget(Clear, popup_area);
                 let text = "⚠️  CLEAR ALL BUILDS - PERMANENT DELETION\n\nThis will delete ALL artifacts from the filesystem.\nThis action cannot be undone.\n\nAre you absolutely sure? (y: Confirm, n: Cancel)";
                 let para = Paragraph::new(text)
-                    .block(Block::default().title("🔴 CLEAR ALL BUILDS").borders(Borders::ALL).style(Style::default().fg(Color::Black).bg(Color::Red)).padding(Padding::new(2, 2, 1, 1)))
+                    .block(
+                        Block::default()
+                            .title("🔴 CLEAR ALL BUILDS")
+                            .borders(Borders::ALL)
+                            .style(Style::default().fg(Color::Black).bg(Color::Red))
+                            .padding(Padding::new(2, 2, 1, 1)),
+                    )
                     .style(Style::default().fg(Color::Black).bg(Color::Red));
                 f.render_widget(para, popup_area);
             }
@@ -184,7 +271,13 @@ impl PopupState {
                 f.render_widget(Clear, popup_area);
                 let text = format!("{}\n\nEnter: Confirm | Esc: Cancel", message);
                 let para = Paragraph::new(text)
-                    .block(Block::default().title("⚠️ CONFIRM ACTION").borders(Borders::ALL).style(Style::default().fg(Color::Black).bg(Color::Yellow)).padding(Padding::new(2, 2, 1, 1)))
+                    .block(
+                        Block::default()
+                            .title("⚠️ CONFIRM ACTION")
+                            .borders(Borders::ALL)
+                            .style(Style::default().fg(Color::Black).bg(Color::Yellow))
+                            .padding(Padding::new(2, 2, 1, 1)),
+                    )
                     .style(Style::default().fg(Color::Black).bg(Color::Yellow));
                 f.render_widget(para, popup_area);
             }
@@ -212,22 +305,30 @@ impl PopupState {
                 } else {
                     for (i, path) in paths.iter().enumerate() {
                         let style = if i == *selected {
-                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
                         } else {
                             Style::default()
                         };
                         items.push(ListItem::new(Span::styled(path.as_str(), style)));
                     }
                 }
-                let list = List::new(items)
-                    .block(Block::default().title("Excluded Paths (↑↓ Enter to remove Esc)").borders(Borders::ALL));
+                let list = List::new(items).block(
+                    Block::default()
+                        .title("Excluded Paths (↑↓ Enter to remove Esc)")
+                        .borders(Borders::ALL),
+                );
                 f.render_widget(list, popup_area);
             }
             PopupState::None => {}
         }
     }
 
-    pub fn handle_key(&mut self, key: &ratatui::crossterm::event::KeyEvent) -> Option<PopupCommand> {
+    pub fn handle_key(
+        &mut self,
+        key: &ratatui::crossterm::event::KeyEvent,
+    ) -> Option<PopupCommand> {
         match self {
             PopupState::SettingsList { selected } => match key.code {
                 KeyCode::Up => {
@@ -246,7 +347,10 @@ impl PopupState {
                 }
                 KeyCode::Enter => {
                     let cmd = match *selected {
-                        0 => Some(PopupCommand::OpenInput { title: "Retention Days".to_string(), initial: "".to_string() }), // will set in app
+                        0 => Some(PopupCommand::OpenInput {
+                            title: "Retention Days".to_string(),
+                            initial: "".to_string(),
+                        }), // will set in app
                         1 => Some(PopupCommand::OpenDirBrowse),
                         2 => Some(PopupCommand::ToggleRemoval),
                         3 => Some(PopupCommand::OpenExcludedPaths),
@@ -280,12 +384,11 @@ impl PopupState {
                 }
                 _ => {}
             },
-            PopupState::Logs { .. } => match key.code {
-                KeyCode::Esc => {
+            PopupState::Logs { .. } => {
+                if key.code == KeyCode::Esc {
                     *self = PopupState::None;
                 }
-                _ => {}
-            },
+            }
             PopupState::Scanning { .. } => {
                 *self = PopupState::None;
                 return None;
@@ -344,16 +447,19 @@ impl PopupState {
                     _ => {}
                 }
             }
-            PopupState::Progress { .. } => match key.code {
-                KeyCode::Esc => {
+            PopupState::Progress { .. } => {
+                if key.code == KeyCode::Esc {
                     *self = PopupState::None;
                 }
-                _ => {}
-            },
+            }
             PopupState::Info { .. } => {
                 *self = PopupState::None;
-            },
-            PopupState::DirBrowse { path, items, selected } => match key.code {
+            }
+            PopupState::DirBrowse {
+                path,
+                items,
+                selected,
+            } => match key.code {
                 KeyCode::Up => {
                     if *selected > 0 {
                         *selected -= 1;
@@ -398,14 +504,20 @@ impl PopupState {
                             std::path::Path::new(path).join(item).display().to_string()
                         };
                         *self = PopupState::None;
-                        return Some(PopupCommand::SetValue { key: "Scan Path".to_string(), value: selected_path });
+                        return Some(PopupCommand::SetValue {
+                            key: "Scan Path".to_string(),
+                            value: selected_path,
+                        });
                     }
                 }
                 KeyCode::Char(' ') => {
                     // Select current directory
                     let current_path = path.clone();
                     *self = PopupState::None;
-                    return Some(PopupCommand::SetValue { key: "Scan Path".to_string(), value: current_path });
+                    return Some(PopupCommand::SetValue {
+                        key: "Scan Path".to_string(),
+                        value: current_path,
+                    });
                 }
                 KeyCode::Esc => {
                     *self = PopupState::None;
@@ -433,7 +545,10 @@ impl PopupState {
                     if !paths.is_empty() {
                         let path = paths[*selected].clone();
                         let message = format!("Remove '{}' from exclusion list?", path);
-                        *self = PopupState::new_confirm_action(message, format!("remove_excluded:{}", path));
+                        *self = PopupState::new_confirm_action(
+                            message,
+                            format!("remove_excluded:{}", path),
+                        );
                         return None;
                     }
                 }
@@ -472,10 +587,10 @@ fn get_dir_items(path: &str) -> Vec<String> {
     let mut items = vec!["..".to_string()];
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
-            if let Ok(file_type) = entry.file_type() {
-                if file_type.is_dir() {
-                    items.push(entry.file_name().to_string_lossy().to_string());
-                }
+            if let Ok(file_type) = entry.file_type()
+                && file_type.is_dir()
+            {
+                items.push(entry.file_name().to_string_lossy().to_string());
             }
         }
     }

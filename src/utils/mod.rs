@@ -1,7 +1,7 @@
 // Utility modules
 
-pub mod logger;
 pub mod helpers;
+pub mod logger;
 
 // Re-export commonly used functions
-pub use helpers::{detect_language_for_path, calculate_dir_size};
+pub use helpers::{calculate_dir_size, detect_language_for_path};

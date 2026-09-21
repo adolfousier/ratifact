@@ -13,7 +13,10 @@ pub fn detect_language_for_path(path: &str) -> String {
         "Python".to_string()
     } else if p.join("go.mod").exists() {
         "Go".to_string()
-    } else if p.join("Makefile").exists() || p.join("CMakeLists.txt").exists() || p.join("configure.ac").exists() {
+    } else if p.join("Makefile").exists()
+        || p.join("CMakeLists.txt").exists()
+        || p.join("configure.ac").exists()
+    {
         "C/C++".to_string()
     } else if p.join("pom.xml").exists() || p.join("build.gradle").exists() {
         "Java".to_string()

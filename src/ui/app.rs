@@ -1,5 +1,11 @@
 // Main app structure for TUI
 
+use crate::config::Config;
+use crate::config::settings::{load_config, save_config};
+use crate::tracking::logger::BuildLogger;
+use crate::tracking::watcher::BuildWatcher;
+use crate::ui::popup::{PopupCommand, PopupState};
+use crate::utils::{calculate_dir_size, detect_language_for_path};
 use ratatui::{
     Frame, Terminal,
     backend::Backend,
@@ -9,19 +15,16 @@ use ratatui::{
     text::Span,
     widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph},
 };
-use std::time::Duration;
-use crate::config::settings::{load_config, save_config};
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
-use crate::tracking::logger::BuildLogger;
-use crate::tracking::watcher::BuildWatcher;
-use crate::config::Config;
-use sqlx::{Row, types::chrono::{DateTime, Utc}};
+use sqlx::{
+    Row,
+    types::chrono::{DateTime, Utc},
+};
 use std::io;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::sync::mpsc;
 use walkdir::WalkDir;
-use crate::utils::{detect_language_for_path, calculate_dir_size};
-use crate::ui::popup::{PopupState, PopupCommand};
 
 pub struct App {
     pub should_quit: bool,
@@ -81,11 +84,11 @@ impl App {
 
     pub async fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
         loop {
-        terminal.draw(|f| self.draw(f))?;
+            terminal.draw(|f| self.draw(f))?;
 
-        self.handle_event().await;
+            self.handle_event().await;
 
-        if self.should_quit {
+            if self.should_quit {
                 break;
             }
         }
@@ -103,7 +106,9 @@ impl App {
             self.artifacts = artifacts;
             self.scanning = false;
             self.scanned = true;
-            self.popup_state = PopupState::Info { message: format!("Scan complete. Found {} artifacts.", self.artifacts.len()) };
+            self.popup_state = PopupState::Info {
+                message: format!("Scan complete. Found {} artifacts.", self.artifacts.len()),
+            };
             let _ = self.load_history().await;
 
             // Trigger automatic cleanup if enabled
@@ -119,7 +124,9 @@ impl App {
                                 let _ = std::fs::remove_dir_all(&path);
                             }
                             // Remove entries from database
-                            let _ = crate::db::schema::delete_old_builds_from_db(&pool, retention_days).await;
+                            let _ =
+                                crate::db::schema::delete_old_builds_from_db(&pool, retention_days)
+                                    .await;
                         }
                         Err(_) => {
                             // Cleanup query failed, continue normally
@@ -130,199 +137,262 @@ impl App {
         }
 
         // Use non-blocking poll with timeout to allow UI to redraw
-        if event::poll(Duration::from_millis(100)).unwrap_or(false) {
-            if let Ok(event) = event::read() {
-                match event {
-                    Event::Resize(_, _) => {
-                        // Terminal was resized, UI will redraw automatically on next loop
-                    }
-                    Event::Key(key) => {
-            // Handle popup first
-            if let Some(cmd) = self.popup_state.handle_key(&key) {
-                match cmd {
-                    PopupCommand::OpenInput { title, initial } => {
-                        let initial = if title == "Retention Days" {
-                            self.config.retention_days.to_string()
-                        } else {
-                            initial
-                        };
-                        self.popup_state = PopupState::new_input(title, initial);
-                    }
-                    PopupCommand::OpenDirBrowse => {
-                        self.popup_state = PopupState::new_dir_browse();
-                    }
-                    PopupCommand::ToggleRemoval => {
-                        if !self.automatic_removal {
-                            // Show warning when enabling automatic removal
-                            let message = "⚠️  AUTOMATIC REMOVAL WILL DELETE OLD ARTIFACTS\n\nPlease verify your build directories in the list above.\nAny directories matching common build paths older than\nretention days will be permanently deleted.\n\nEnable automatic removal? (Enter: Yes, Esc: No)".to_string();
-                            let action = "enable_automatic_removal".to_string();
-                            self.popup_state = PopupState::ConfirmAction { message, action };
-                        } else {
-                            // Disabling is safe, just toggle
-                            self.automatic_removal = false;
-                        }
-                    }
-                    PopupCommand::SetValue { key, value } => {
-                        if key == "Retention Days" {
-                            if let Ok(days) = value.parse::<u32>() {
-                                self.config.retention_days = days;
+        if event::poll(Duration::from_millis(100)).unwrap_or(false)
+            && let Ok(event) = event::read()
+        {
+            match event {
+                Event::Resize(_, _) => {
+                    // Terminal was resized, UI will redraw automatically on next loop
+                }
+                Event::Key(key) => {
+                    // Handle popup first
+                    if let Some(cmd) = self.popup_state.handle_key(&key) {
+                        match cmd {
+                            PopupCommand::OpenInput { title, initial } => {
+                                let initial = if title == "Retention Days" {
+                                    self.config.retention_days.to_string()
+                                } else {
+                                    initial
+                                };
+                                self.popup_state = PopupState::new_input(title, initial);
                             }
-                        } else if key == "Scan Path" {
-                            self.config.scan_paths = vec![value];
-                         } else if key == "Enter sudo password" {
-                             if let Some(action) = self.pending_action.take() {
-                                 if action == "delete" {
-                                     let path = self.artifacts[self.selected].clone();
-                                     let password = value.clone();
-
-                                     // Try the deletion synchronously to check if it succeeds
-                                     if Self::delete_with_sudo_blocking(&path, Some(&password)) {
-                                         self.artifacts.remove(self.selected);
-                                         if self.selected >= self.artifacts.len() && self.selected > 0 {
-                                             self.selected -= 1;
-                                         }
-                                         // Update DB in background
-                                         let pool = self.logger.pool.clone();
-                                         tokio::spawn(async move {
-                                             let _ = sqlx::query("DELETE FROM builds WHERE artifact_path = $1").bind(&path).execute(&pool).await;
-                                         });
-                                         self.popup_state = PopupState::Info { message: "Artifact deleted successfully.".to_string() };
-                                     } else {
-                                         self.popup_state = PopupState::Info { message: "Deletion failed - please check permissions or try again.".to_string() };
-                                     }
-                                 } else if action == "clear_all" {
-                                     let failed_paths = self.pending_failed_paths.clone();
-                                     self.pending_failed_paths.clear();
-                                     let password = value.clone();
-
-                                     let mut all_success = true;
-                                     for path in &failed_paths {
-                                         if !Self::delete_with_sudo_blocking(path, Some(&password)) {
-                                             all_success = false;
-                                         }
-                                     }
-
-                                     if all_success {
-                                         self.artifacts.clear();
-                                         let pool = self.logger.pool.clone();
-                                         tokio::spawn(async move {
-                                             let _ = sqlx::query("DELETE FROM builds").execute(&pool).await;
-                                         });
-                                         self.popup_state = PopupState::Info { message: "All builds cleared successfully.".to_string() };
-                                     } else {
-                                         self.popup_state = PopupState::Info { message: "Some deletions failed - please check permissions.".to_string() };
-                                     }
-                                 }
-                             }
-                        }
-                        // Save config after changes
-                        save_config(&self.config).ok();
-                    }
-                    PopupCommand::DeleteArtifact => {
-                        self.popup_state = PopupState::new_confirm_action("Delete this artifact?".to_string(), "delete".to_string());
-                    }
-                    PopupCommand::RebuildArtifact => {
-                        self.popup_state = PopupState::new_confirm_action("Rebuild this project?".to_string(), "rebuild".to_string());
-                    }
-                    PopupCommand::ClearAllBuilds => {
-                        self.clear_all_builds().await;
-                    }
-                    PopupCommand::ConfirmAction { action } => {
-                         if action.starts_with("remove_excluded:") {
-                             let path = action.strip_prefix("remove_excluded:").unwrap_or("").to_string();
-                             self.config.excluded_paths.retain(|p| p != &path);
-                             save_config(&self.config).ok();
-                             self.popup_state = PopupState::Info { message: format!("Removed from exclusion list. Rescanning...", ) };
-                             if !self.scanning {
-                                 self.trigger_scan().await;
-                             }
-                         } else {
-                             match action.as_str() {
-                                 "delete" => {
-                                     self.popup_state = PopupState::new_progress("Deleting artifact...".to_string());
-                                     self.delete_selected().await;
-                                     // delete_selected sets the popup_state
-                                 }
-                                "rebuild" => {
-                                    self.rebuild_selected();
-                                    self.popup_state = PopupState::new_progress("Rebuilding project...".to_string());
+                            PopupCommand::OpenDirBrowse => {
+                                self.popup_state = PopupState::new_dir_browse();
+                            }
+                            PopupCommand::ToggleRemoval => {
+                                if !self.automatic_removal {
+                                    // Show warning when enabling automatic removal
+                                    let message = "⚠️  AUTOMATIC REMOVAL WILL DELETE OLD ARTIFACTS\n\nPlease verify your build directories in the list above.\nAny directories matching common build paths older than\nretention days will be permanently deleted.\n\nEnable automatic removal? (Enter: Yes, Esc: No)".to_string();
+                                    let action = "enable_automatic_removal".to_string();
+                                    self.popup_state =
+                                        PopupState::ConfirmAction { message, action };
+                                } else {
+                                    // Disabling is safe, just toggle
+                                    self.automatic_removal = false;
                                 }
-                                "exclude" => {
-                                    if self.selected < self.artifacts.len() {
+                            }
+                            PopupCommand::SetValue { key, value } => {
+                                if key == "Retention Days" {
+                                    if let Ok(days) = value.parse::<u32>() {
+                                        self.config.retention_days = days;
+                                    }
+                                } else if key == "Scan Path" {
+                                    self.config.scan_paths = vec![value];
+                                } else if key == "Enter sudo password"
+                                    && let Some(action) = self.pending_action.take()
+                                {
+                                    if action == "delete" {
                                         let path = self.artifacts[self.selected].clone();
-                                        self.config.excluded_paths.push(path);
-                                        self.artifacts.remove(self.selected);
-                                        if self.selected >= self.artifacts.len() && self.selected > 0 {
-                                            self.selected -= 1;
+                                        let password = value.clone();
+
+                                        // Try the deletion synchronously to check if it succeeds
+                                        if Self::delete_with_sudo_blocking(&path, Some(&password)) {
+                                            self.artifacts.remove(self.selected);
+                                            if self.selected >= self.artifacts.len()
+                                                && self.selected > 0
+                                            {
+                                                self.selected -= 1;
+                                            }
+                                            // Update DB in background
+                                            let pool = self.logger.pool.clone();
+                                            tokio::spawn(async move {
+                                                let _ = sqlx::query(
+                                                    "DELETE FROM builds WHERE artifact_path = $1",
+                                                )
+                                                .bind(&path)
+                                                .execute(&pool)
+                                                .await;
+                                            });
+                                            self.popup_state = PopupState::Info {
+                                                message: "Artifact deleted successfully."
+                                                    .to_string(),
+                                            };
+                                        } else {
+                                            self.popup_state = PopupState::Info { message: "Deletion failed - please check permissions or try again.".to_string() };
                                         }
-                                        save_config(&self.config).ok();
-                                        self.popup_state = PopupState::Info { message: "Path added to exclusion list.".to_string() };
+                                    } else if action == "clear_all" {
+                                        let failed_paths = self.pending_failed_paths.clone();
+                                        self.pending_failed_paths.clear();
+                                        let password = value.clone();
+
+                                        let mut all_success = true;
+                                        for path in &failed_paths {
+                                            if !Self::delete_with_sudo_blocking(
+                                                path,
+                                                Some(&password),
+                                            ) {
+                                                all_success = false;
+                                            }
+                                        }
+
+                                        if all_success {
+                                            self.artifacts.clear();
+                                            let pool = self.logger.pool.clone();
+                                            tokio::spawn(async move {
+                                                let _ = sqlx::query("DELETE FROM builds")
+                                                    .execute(&pool)
+                                                    .await;
+                                            });
+                                            self.popup_state = PopupState::Info {
+                                                message: "All builds cleared successfully."
+                                                    .to_string(),
+                                            };
+                                        } else {
+                                            self.popup_state = PopupState::Info { message: "Some deletions failed - please check permissions.".to_string() };
+                                        }
                                     }
                                 }
-                                "enable_automatic_removal" => {
-                                    self.automatic_removal = true;
-                                    self.popup_state = PopupState::Info { message: "Automatic removal enabled. Old artifacts will be cleaned up after scans.".to_string() };
-                                }
-                                _ => {}
+                                // Save config after changes
+                                save_config(&self.config).ok();
                             }
-                         }
-                    }
-                    PopupCommand::OpenExcludedPaths => {
-                        self.popup_state = PopupState::new_excluded_paths(self.config.excluded_paths.clone());
-                    }
-                }
-            } else if matches!(self.popup_state, PopupState::None) {
-                // Main keys only when no popup
-                match key.code {
-                    KeyCode::Char('D') if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                        self.popup_state = PopupState::new_clear_all_confirmation();
-                    },
-                    KeyCode::Enter => {
-                        if self.focused_panel == 0 {
-                            self.popup_state = PopupState::new_artifact_actions();
-                        } else if self.focused_panel == 3 {
-                            self.popup_state = PopupState::new_settings_list();
+                            PopupCommand::DeleteArtifact => {
+                                self.popup_state = PopupState::new_confirm_action(
+                                    "Delete this artifact?".to_string(),
+                                    "delete".to_string(),
+                                );
+                            }
+                            PopupCommand::RebuildArtifact => {
+                                self.popup_state = PopupState::new_confirm_action(
+                                    "Rebuild this project?".to_string(),
+                                    "rebuild".to_string(),
+                                );
+                            }
+                            PopupCommand::ClearAllBuilds => {
+                                self.clear_all_builds().await;
+                            }
+                            PopupCommand::ConfirmAction { action } => {
+                                if action.starts_with("remove_excluded:") {
+                                    let path = action
+                                        .strip_prefix("remove_excluded:")
+                                        .unwrap_or("")
+                                        .to_string();
+                                    self.config.excluded_paths.retain(|p| p != &path);
+                                    save_config(&self.config).ok();
+                                    self.popup_state = PopupState::Info {
+                                        message: "Removed from exclusion list. Rescanning..."
+                                            .to_string(),
+                                    };
+                                    if !self.scanning {
+                                        self.trigger_scan().await;
+                                    }
+                                } else {
+                                    match action.as_str() {
+                                        "delete" => {
+                                            self.popup_state = PopupState::new_progress(
+                                                "Deleting artifact...".to_string(),
+                                            );
+                                            self.delete_selected().await;
+                                            // delete_selected sets the popup_state
+                                        }
+                                        "rebuild" => {
+                                            self.rebuild_selected();
+                                            self.popup_state = PopupState::new_progress(
+                                                "Rebuilding project...".to_string(),
+                                            );
+                                        }
+                                        "exclude" => {
+                                            if self.selected < self.artifacts.len() {
+                                                let path = self.artifacts[self.selected].clone();
+                                                self.config.excluded_paths.push(path);
+                                                self.artifacts.remove(self.selected);
+                                                if self.selected >= self.artifacts.len()
+                                                    && self.selected > 0
+                                                {
+                                                    self.selected -= 1;
+                                                }
+                                                save_config(&self.config).ok();
+                                                self.popup_state = PopupState::Info {
+                                                    message: "Path added to exclusion list."
+                                                        .to_string(),
+                                                };
+                                            }
+                                        }
+                                        "enable_automatic_removal" => {
+                                            self.automatic_removal = true;
+                                            self.popup_state = PopupState::Info { message: "Automatic removal enabled. Old artifacts will be cleaned up after scans.".to_string() };
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            PopupCommand::OpenExcludedPaths => {
+                                self.popup_state = PopupState::new_excluded_paths(
+                                    self.config.excluded_paths.clone(),
+                                );
+                            }
                         }
-                    },
-                    KeyCode::Char('q') => self.should_quit = true,
-                    KeyCode::Tab => self.focused_panel = (self.focused_panel + 1) % 5,
-                    KeyCode::Char('s') => if !self.scanning { self.trigger_scan().await; },
-                     KeyCode::Char('d') => self.popup_state = PopupState::new_confirm_action("Delete this artifact?".to_string(), "delete".to_string()),
-                    KeyCode::Char('x') | KeyCode::Char('X') => {
-                        if self.focused_panel == 0 && self.selected < self.artifacts.len() {
-                            self.popup_state = PopupState::new_confirm_action("Exclude this path from scanning?".to_string(), "exclude".to_string());
+                    } else if matches!(self.popup_state, PopupState::None) {
+                        // Main keys only when no popup
+                        match key.code {
+                            KeyCode::Char('D') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                                self.popup_state = PopupState::new_clear_all_confirmation();
+                            }
+                            KeyCode::Enter => {
+                                if self.focused_panel == 0 {
+                                    self.popup_state = PopupState::new_artifact_actions();
+                                } else if self.focused_panel == 3 {
+                                    self.popup_state = PopupState::new_settings_list();
+                                }
+                            }
+                            KeyCode::Char('q') => self.should_quit = true,
+                            KeyCode::Tab => self.focused_panel = (self.focused_panel + 1) % 5,
+                            KeyCode::Char('s') => {
+                                if !self.scanning {
+                                    self.trigger_scan().await;
+                                }
+                            }
+                            KeyCode::Char('d') => {
+                                self.popup_state = PopupState::new_confirm_action(
+                                    "Delete this artifact?".to_string(),
+                                    "delete".to_string(),
+                                )
+                            }
+                            KeyCode::Char('x') | KeyCode::Char('X') => {
+                                if self.focused_panel == 0 && self.selected < self.artifacts.len() {
+                                    self.popup_state = PopupState::new_confirm_action(
+                                        "Exclude this path from scanning?".to_string(),
+                                        "exclude".to_string(),
+                                    );
+                                }
+                            }
+                            KeyCode::Char('r') => self.rebuild_selected(),
+                            KeyCode::Char('h') => self.load_history().await,
+                            KeyCode::Char('e') => {
+                                self.popup_state = PopupState::new_settings_list()
+                            }
+                            KeyCode::Char('l') => {
+                                self.popup_state =
+                                    PopupState::new_logs_popup(Arc::clone(&self.logs))
+                            }
+                            KeyCode::Up | KeyCode::PageUp => {
+                                if self.focused_panel == 0 && self.selected > 0 {
+                                    self.selected -= 1;
+                                } else if self.focused_panel == 2 && self.chart_selected > 0 {
+                                    self.chart_selected -= 1;
+                                }
+                            }
+                            KeyCode::Down | KeyCode::PageDown => {
+                                if self.focused_panel == 0
+                                    && self.selected < self.artifacts.len().saturating_sub(1)
+                                {
+                                    self.selected += 1;
+                                } else if self.focused_panel == 2
+                                    && self.chart_selected < self.chart_data.len().saturating_sub(1)
+                                {
+                                    self.chart_selected += 1;
+                                }
+                            }
+                            _ => {}
                         }
-                    },
-                    KeyCode::Char('r') => self.rebuild_selected(),
-                    KeyCode::Char('h') => self.load_history().await,
-                    KeyCode::Char('e') => self.popup_state = PopupState::new_settings_list(),
-                     KeyCode::Char('l') => self.popup_state = PopupState::new_logs_popup(Arc::clone(&self.logs)),
-                     KeyCode::Up | KeyCode::PageUp => {
-                         if self.focused_panel == 0 && self.selected > 0 {
-                             self.selected -= 1;
-                         } else if self.focused_panel == 2 && self.chart_selected > 0 {
-                             self.chart_selected -= 1;
-                         }
-                     }
-                     KeyCode::Down | KeyCode::PageDown => {
-                         if self.focused_panel == 0 && self.selected < self.artifacts.len().saturating_sub(1) {
-                             self.selected += 1;
-                         } else if self.focused_panel == 2 && self.chart_selected < self.chart_data.len().saturating_sub(1) {
-                             self.chart_selected += 1;
-                         }
-                     }
-                    _ => {}
-                }
-            } else {
-                // Popup open, only allow quit
-                if key.code == KeyCode::Char('q') {
-                    self.should_quit = true;
-                }
-            }
+                    } else {
+                        // Popup open, only allow quit
+                        if key.code == KeyCode::Char('q') {
+                            self.should_quit = true;
+                        }
                     }
-                    _ => {
-                        // Ignore other events
-                    }
+                }
+                _ => {
+                    // Ignore other events
                 }
             }
         }
@@ -399,7 +469,12 @@ impl App {
             Style::default()
         };
         let (start, take_count) = (0, self.artifacts.len());
-        let scan_path = self.config.scan_paths.first().map(|s| s.as_str()).unwrap_or("");
+        let scan_path = self
+            .config
+            .scan_paths
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let items: Vec<ListItem> = self
             .artifacts
             .iter()
@@ -408,11 +483,12 @@ impl App {
             .enumerate()
             .map(|(i, a)| {
                 // Strip scan path prefix
-                let relative_path = if let Some(stripped) = a.strip_prefix(&format!("{}/", scan_path)) {
-                    stripped
-                } else {
-                    a
-                };
+                let relative_path =
+                    if let Some(stripped) = a.strip_prefix(&format!("{}/", scan_path)) {
+                        stripped
+                    } else {
+                        a
+                    };
                 let color = if a.contains("target") {
                     Color::Green
                 } else if a.contains("node_modules") {
@@ -439,7 +515,7 @@ impl App {
                 .borders(Borders::ALL)
                 .border_style(border_style)
                 .title("📦 Artifacts")
-                .padding(Padding::new(1,1,1,0)),
+                .padding(Padding::new(1, 1, 1, 0)),
         );
         f.render_stateful_widget(list, area, &mut state);
     }
@@ -456,7 +532,7 @@ impl App {
                 .borders(Borders::ALL)
                 .border_style(border_style)
                 .title("📜 History")
-                .padding(Padding::new(1,1,1,0)),
+                .padding(Padding::new(1, 1, 1, 0)),
         );
         f.render_widget(para, area);
     }
@@ -471,28 +547,57 @@ impl App {
             vec![ListItem::new("No data")]
         } else {
             let max_size = self.chart_data.iter().map(|(_, s)| *s).max().unwrap_or(1);
-            let colors = [Color::Red, Color::Green, Color::Blue, Color::Yellow, Color::Magenta, Color::Cyan, Color::White];
-            let scan_path = self.config.scan_paths.first().map(|s| s.as_str()).unwrap_or("");
+            let colors = [
+                Color::Red,
+                Color::Green,
+                Color::Blue,
+                Color::Yellow,
+                Color::Magenta,
+                Color::Cyan,
+                Color::White,
+            ];
+            let scan_path = self
+                .config
+                .scan_paths
+                .first()
+                .map(|s| s.as_str())
+                .unwrap_or("");
             // Calculate available width for bars: area.width - borders(2) - padding(2) - name(15) - spaces(2) - size(10)
             let available_width = area.width.saturating_sub(31).max(10) as u64;
-            self.chart_data.iter().enumerate().map(|(i, (name, size))| {
-                let bar_len = if max_size > 0 { (size * available_width / max_size) as usize } else { 0 };
-                let bar = "█".repeat(bar_len);
-                let size_mb = size / 1_000_000;
-                let color = colors[i % colors.len()];
-                let style = if focused && i == self.chart_selected {
-                    Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(color)
-                };
-                let relative_name = if let Some(stripped) = name.strip_prefix(&format!("{}/", scan_path)) {
-                    stripped
-                } else {
-                    name
-                };
-                let short_name = if relative_name.len() > 15 { format!("{}...", &relative_name[..12]) } else { relative_name.to_string() };
-                ListItem::new(Span::styled(format!("{:<15} {} {}MB\n", short_name, bar, size_mb), style))
-            }).collect()
+            self.chart_data
+                .iter()
+                .enumerate()
+                .map(|(i, (name, size))| {
+                    let bar_len =
+                        (size * available_width).checked_div(max_size).unwrap_or(0) as usize;
+                    let bar = "█".repeat(bar_len);
+                    let size_mb = size / 1_000_000;
+                    let color = colors[i % colors.len()];
+                    let style = if focused && i == self.chart_selected {
+                        Style::default()
+                            .bg(Color::Blue)
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(color)
+                    };
+                    let relative_name =
+                        if let Some(stripped) = name.strip_prefix(&format!("{}/", scan_path)) {
+                            stripped
+                        } else {
+                            name
+                        };
+                    let short_name = if relative_name.len() > 15 {
+                        format!("{}...", &relative_name[..12])
+                    } else {
+                        relative_name.to_string()
+                    };
+                    ListItem::new(Span::styled(
+                        format!("{:<15} {} {}MB\n", short_name, bar, size_mb),
+                        style,
+                    ))
+                })
+                .collect()
         };
         let mut state = ListState::default();
         state.select(Some(self.chart_selected));
@@ -501,7 +606,7 @@ impl App {
                 .borders(Borders::ALL)
                 .border_style(border_style)
                 .title("📊 Charts")
-                .padding(Padding::new(1,1,1,0)),
+                .padding(Padding::new(1, 1, 1, 0)),
         );
         f.render_stateful_widget(list, area, &mut state);
     }
@@ -513,7 +618,11 @@ impl App {
             Style::default()
         };
         let masked_db = Self::mask_db_url(&self.config.database_url);
-        let removal_status = if self.automatic_removal { "Enabled" } else { "Disabled" };
+        let removal_status = if self.automatic_removal {
+            "Enabled"
+        } else {
+            "Disabled"
+        };
         let excluded_count = self.config.excluded_paths.len();
         let text = format!(
             "DB: {}\nPaths: {}\nRetention Days: {}\nAutomatic Removal: {}\nExcluded Paths: {}",
@@ -527,13 +636,11 @@ impl App {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(border_style)
-                .padding(Padding::new(1,1,1,0))
+                .padding(Padding::new(1, 1, 1, 0))
                 .title("⚙️ Settings"),
         );
         f.render_widget(para, area);
     }
-
-
 
     fn draw_overview_summary(&self, f: &mut Frame, area: Rect, focused: bool) {
         let border_style = if focused {
@@ -551,16 +658,16 @@ impl App {
                 .borders(Borders::ALL)
                 .border_style(border_style)
                 .title("🏠 Summary")
-                .padding(Padding::new(1,1,1,0)),
+                .padding(Padding::new(1, 1, 1, 0)),
         );
         f.render_widget(para, area);
     }
 
-
-
     async fn trigger_scan(&mut self) {
         self.scanning = true;
-        self.popup_state = PopupState::Scanning { logs: Arc::clone(&self.logs) };
+        self.popup_state = PopupState::Scanning {
+            logs: Arc::clone(&self.logs),
+        };
         let scan_paths = if self.config.scan_paths.is_empty() {
             vec![".".to_string()]
         } else {
@@ -630,7 +737,12 @@ impl App {
                         let is_excluded = excluded_paths.iter().any(|ex| path_str.contains(ex));
 
                         if common_dirs.contains(&name.as_ref()) && !is_excluded {
-                            let project_path = entry.path().parent().unwrap_or(Path::new(".")).display().to_string();
+                            let project_path = entry
+                                .path()
+                                .parent()
+                                .unwrap_or(Path::new("."))
+                                .display()
+                                .to_string();
                             let language = detect_language_for_path(&project_path);
                             let size = calculate_dir_size(&path_str);
                             {
@@ -650,14 +762,20 @@ impl App {
                 total_count += count;
                 {
                     let mut logs = logs_clone.lock().unwrap();
-                    logs.push(format!("Scan complete for {}. Found {} artifacts.", scan_path, count));
+                    logs.push(format!(
+                        "Scan complete for {}. Found {} artifacts.",
+                        scan_path, count
+                    ));
                 }
             }
             let artifacts = artifacts_clone.lock().unwrap().clone();
             let _ = tx_clone.send(artifacts).await;
             {
                 let mut logs = logs_clone.lock().unwrap();
-                logs.push(format!("Total scan complete. Found {} artifacts.", total_count));
+                logs.push(format!(
+                    "Total scan complete. Found {} artifacts.",
+                    total_count
+                ));
             }
         });
     }
@@ -674,12 +792,18 @@ impl App {
                 self.selected -= 1;
             }
             // Update DB
-            let _ = sqlx::query("DELETE FROM builds WHERE artifact_path = $1").bind(&path).execute(&self.logger.pool).await;
-            self.popup_state = PopupState::Info { message: "Artifact deleted.".to_string() };
+            let _ = sqlx::query("DELETE FROM builds WHERE artifact_path = $1")
+                .bind(&path)
+                .execute(&self.logger.pool)
+                .await;
+            self.popup_state = PopupState::Info {
+                message: "Artifact deleted.".to_string(),
+            };
         } else {
             // Prompt for password
             self.pending_action = Some("delete".to_string());
-            self.popup_state = PopupState::new_input("Enter sudo password".to_string(), "".to_string());
+            self.popup_state =
+                PopupState::new_input("Enter sudo password".to_string(), "".to_string());
         }
     }
 
@@ -807,13 +931,18 @@ impl App {
         }
         if failed_paths.is_empty() {
             self.artifacts.clear();
-            let _ = sqlx::query("DELETE FROM builds").execute(&self.logger.pool).await;
+            let _ = sqlx::query("DELETE FROM builds")
+                .execute(&self.logger.pool)
+                .await;
             self.load_history().await;
-            self.popup_state = PopupState::Info { message: "All builds cleared.".to_string() };
+            self.popup_state = PopupState::Info {
+                message: "All builds cleared.".to_string(),
+            };
         } else {
             self.pending_failed_paths = failed_paths;
             self.pending_action = Some("clear_all".to_string());
-            self.popup_state = PopupState::new_input("Enter sudo password".to_string(), "".to_string());
+            self.popup_state =
+                PopupState::new_input("Enter sudo password".to_string(), "".to_string());
         }
     }
 

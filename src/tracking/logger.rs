@@ -2,11 +2,17 @@
 
 use crate::db::connection::establish_connection;
 use crate::db::schema::create_tables;
-use sqlx::PgPool;
 
+#[cfg(feature = "postgres")]
 #[derive(Clone)]
 pub struct BuildLogger {
-    pub pool: PgPool,
+    pub pool: sqlx::PgPool,
+}
+
+#[cfg(feature = "sqlite")]
+#[derive(Clone)]
+pub struct BuildLogger {
+    pub pool: sqlx::SqlitePool,
 }
 
 impl BuildLogger {
@@ -35,5 +41,3 @@ impl BuildLogger {
         Ok(())
     }
 }
-
-

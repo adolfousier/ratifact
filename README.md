@@ -2,6 +2,7 @@
 [![Ratatui](https://img.shields.io/badge/ratatui-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white)](https://ratatui.rs)
 [![Docker](https://img.shields.io/badge/docker-%23000000.svg?style=for-the-badge&logo=docker&logoColor=white)](https://docker.com)
 [![Just](https://img.shields.io/badge/Just-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white)](https://just.systems)
+[![SQLite](https://img.shields.io/badge/sqlite-%23000000.svg?style=for-the-badge&logo=sqlite&logoColor=white)](https://www.sqlite.org)
 [![PostgreSQL](https://img.shields.io/badge/postgresql-%23000000.svg?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org)
 
 [![Ratifact](https://img.shields.io/badge/Ratifact-7f56da)](https://meetneura.ai) [![Powered by Neura AI](https://img.shields.io/badge/Powered%20by-Neura%20AI-7f56da)](https://meetneura.ai)
@@ -119,9 +120,13 @@ Use Enter in the settings panel to edit these options via popups.
 
 ## Special Notes
 
-**First time running**: The app connects to PostgreSQL and creates tables automatically.
+**Database**: Ratifact ships with **SQLite as the default backend** — no server, no Docker, no setup. The first run creates `ratifact.db` in the working directory and applies the schema automatically.
 
-**Permissions**: Ensure read/write access to project directories and PostgreSQL access.
+**PostgreSQL builds**: Compile with `cargo build --no-default-features --features postgres` to target a Postgres server instead. The `sqlite` and `postgres` features are mutually exclusive; enabling both (or neither) fails the build with an explicit message.
+
+**Override**: Set `DATABASE_URL` (e.g. `postgres://user:pass@host:port/db` or `sqlite://./custom.db?mode=rwc`) to bypass the compiled-in default.
+
+**Permissions**: Ensure read/write access to project directories and, for Postgres builds, database access.
 
 ## Uninstall
 
@@ -181,8 +186,8 @@ powershell -ExecutionPolicy Bypass -File src/scripts/windows/uninstall.ps1
 
 The uninstall process will:
 
-1. **Stop PostgreSQL container** - Shuts down the running Docker container
-2. **Remove database volume** (optional) - You'll be prompted to confirm deletion of all database data
+1. **Stop database services** - Stops the PostgreSQL container for Postgres deployments (the default SQLite build needs no server)
+2. **Remove database storage** (optional) - You'll be prompted to confirm deletion of the Postgres volume or the local `ratifact.db` file
 3. **Clean build artifacts** - Removes compiled binaries and intermediate build files
 4. **Remove installation directory** (optional) - You can choose to keep the source code or remove it completely
 
