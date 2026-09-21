@@ -15,15 +15,15 @@ impl BuildWatcher {
         let watcher = RecommendedWatcher::new(
             move |res: Result<notify::Event, notify::Error>| match res {
                 Ok(event) => {
-                    if debug_logs_enabled {
-                        if matches!(
+                    if debug_logs_enabled
+                        && matches!(
                             event.kind,
                             notify::EventKind::Create(_)
                                 | notify::EventKind::Modify(_)
                                 | notify::EventKind::Remove(_)
-                        ) {
-                            log_to_file(&format!("Build change detected: {:?}", event));
-                        }
+                        )
+                    {
+                        log_to_file(&format!("Build change detected: {:?}", event));
                     }
                 }
                 Err(e) => {

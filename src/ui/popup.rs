@@ -384,12 +384,11 @@ impl PopupState {
                 }
                 _ => {}
             },
-            PopupState::Logs { .. } => match key.code {
-                KeyCode::Esc => {
+            PopupState::Logs { .. } => {
+                if key.code == KeyCode::Esc {
                     *self = PopupState::None;
                 }
-                _ => {}
-            },
+            }
             PopupState::Scanning { .. } => {
                 *self = PopupState::None;
                 return None;
@@ -448,12 +447,11 @@ impl PopupState {
                     _ => {}
                 }
             }
-            PopupState::Progress { .. } => match key.code {
-                KeyCode::Esc => {
+            PopupState::Progress { .. } => {
+                if key.code == KeyCode::Esc {
                     *self = PopupState::None;
                 }
-                _ => {}
-            },
+            }
             PopupState::Info { .. } => {
                 *self = PopupState::None;
             }
@@ -589,10 +587,10 @@ fn get_dir_items(path: &str) -> Vec<String> {
     let mut items = vec!["..".to_string()];
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
-            if let Ok(file_type) = entry.file_type() {
-                if file_type.is_dir() {
-                    items.push(entry.file_name().to_string_lossy().to_string());
-                }
+            if let Ok(file_type) = entry.file_type()
+                && file_type.is_dir()
+            {
+                items.push(entry.file_name().to_string_lossy().to_string());
             }
         }
     }

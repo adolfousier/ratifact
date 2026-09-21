@@ -137,268 +137,262 @@ impl App {
         }
 
         // Use non-blocking poll with timeout to allow UI to redraw
-        if event::poll(Duration::from_millis(100)).unwrap_or(false) {
-            if let Ok(event) = event::read() {
-                match event {
-                    Event::Resize(_, _) => {
-                        // Terminal was resized, UI will redraw automatically on next loop
-                    }
-                    Event::Key(key) => {
-                        // Handle popup first
-                        if let Some(cmd) = self.popup_state.handle_key(&key) {
-                            match cmd {
-                                PopupCommand::OpenInput { title, initial } => {
-                                    let initial = if title == "Retention Days" {
-                                        self.config.retention_days.to_string()
-                                    } else {
-                                        initial
-                                    };
-                                    self.popup_state = PopupState::new_input(title, initial);
-                                }
-                                PopupCommand::OpenDirBrowse => {
-                                    self.popup_state = PopupState::new_dir_browse();
-                                }
-                                PopupCommand::ToggleRemoval => {
-                                    if !self.automatic_removal {
-                                        // Show warning when enabling automatic removal
-                                        let message = "⚠️  AUTOMATIC REMOVAL WILL DELETE OLD ARTIFACTS\n\nPlease verify your build directories in the list above.\nAny directories matching common build paths older than\nretention days will be permanently deleted.\n\nEnable automatic removal? (Enter: Yes, Esc: No)".to_string();
-                                        let action = "enable_automatic_removal".to_string();
-                                        self.popup_state =
-                                            PopupState::ConfirmAction { message, action };
-                                    } else {
-                                        // Disabling is safe, just toggle
-                                        self.automatic_removal = false;
-                                    }
-                                }
-                                PopupCommand::SetValue { key, value } => {
-                                    if key == "Retention Days" {
-                                        if let Ok(days) = value.parse::<u32>() {
-                                            self.config.retention_days = days;
-                                        }
-                                    } else if key == "Scan Path" {
-                                        self.config.scan_paths = vec![value];
-                                    } else if key == "Enter sudo password" {
-                                        if let Some(action) = self.pending_action.take() {
-                                            if action == "delete" {
-                                                let path = self.artifacts[self.selected].clone();
-                                                let password = value.clone();
-
-                                                // Try the deletion synchronously to check if it succeeds
-                                                if Self::delete_with_sudo_blocking(
-                                                    &path,
-                                                    Some(&password),
-                                                ) {
-                                                    self.artifacts.remove(self.selected);
-                                                    if self.selected >= self.artifacts.len()
-                                                        && self.selected > 0
-                                                    {
-                                                        self.selected -= 1;
-                                                    }
-                                                    // Update DB in background
-                                                    let pool = self.logger.pool.clone();
-                                                    tokio::spawn(async move {
-                                                        let _ = sqlx::query("DELETE FROM builds WHERE artifact_path = $1").bind(&path).execute(&pool).await;
-                                                    });
-                                                    self.popup_state = PopupState::Info {
-                                                        message: "Artifact deleted successfully."
-                                                            .to_string(),
-                                                    };
-                                                } else {
-                                                    self.popup_state = PopupState::Info { message: "Deletion failed - please check permissions or try again.".to_string() };
-                                                }
-                                            } else if action == "clear_all" {
-                                                let failed_paths =
-                                                    self.pending_failed_paths.clone();
-                                                self.pending_failed_paths.clear();
-                                                let password = value.clone();
-
-                                                let mut all_success = true;
-                                                for path in &failed_paths {
-                                                    if !Self::delete_with_sudo_blocking(
-                                                        path,
-                                                        Some(&password),
-                                                    ) {
-                                                        all_success = false;
-                                                    }
-                                                }
-
-                                                if all_success {
-                                                    self.artifacts.clear();
-                                                    let pool = self.logger.pool.clone();
-                                                    tokio::spawn(async move {
-                                                        let _ = sqlx::query("DELETE FROM builds")
-                                                            .execute(&pool)
-                                                            .await;
-                                                    });
-                                                    self.popup_state = PopupState::Info {
-                                                        message: "All builds cleared successfully."
-                                                            .to_string(),
-                                                    };
-                                                } else {
-                                                    self.popup_state = PopupState::Info { message: "Some deletions failed - please check permissions.".to_string() };
-                                                }
-                                            }
-                                        }
-                                    }
-                                    // Save config after changes
-                                    save_config(&self.config).ok();
-                                }
-                                PopupCommand::DeleteArtifact => {
-                                    self.popup_state = PopupState::new_confirm_action(
-                                        "Delete this artifact?".to_string(),
-                                        "delete".to_string(),
-                                    );
-                                }
-                                PopupCommand::RebuildArtifact => {
-                                    self.popup_state = PopupState::new_confirm_action(
-                                        "Rebuild this project?".to_string(),
-                                        "rebuild".to_string(),
-                                    );
-                                }
-                                PopupCommand::ClearAllBuilds => {
-                                    self.clear_all_builds().await;
-                                }
-                                PopupCommand::ConfirmAction { action } => {
-                                    if action.starts_with("remove_excluded:") {
-                                        let path = action
-                                            .strip_prefix("remove_excluded:")
-                                            .unwrap_or("")
-                                            .to_string();
-                                        self.config.excluded_paths.retain(|p| p != &path);
-                                        save_config(&self.config).ok();
-                                        self.popup_state = PopupState::Info {
-                                            message: format!(
-                                                "Removed from exclusion list. Rescanning...",
-                                            ),
-                                        };
-                                        if !self.scanning {
-                                            self.trigger_scan().await;
-                                        }
-                                    } else {
-                                        match action.as_str() {
-                                            "delete" => {
-                                                self.popup_state = PopupState::new_progress(
-                                                    "Deleting artifact...".to_string(),
-                                                );
-                                                self.delete_selected().await;
-                                                // delete_selected sets the popup_state
-                                            }
-                                            "rebuild" => {
-                                                self.rebuild_selected();
-                                                self.popup_state = PopupState::new_progress(
-                                                    "Rebuilding project...".to_string(),
-                                                );
-                                            }
-                                            "exclude" => {
-                                                if self.selected < self.artifacts.len() {
-                                                    let path =
-                                                        self.artifacts[self.selected].clone();
-                                                    self.config.excluded_paths.push(path);
-                                                    self.artifacts.remove(self.selected);
-                                                    if self.selected >= self.artifacts.len()
-                                                        && self.selected > 0
-                                                    {
-                                                        self.selected -= 1;
-                                                    }
-                                                    save_config(&self.config).ok();
-                                                    self.popup_state = PopupState::Info {
-                                                        message: "Path added to exclusion list."
-                                                            .to_string(),
-                                                    };
-                                                }
-                                            }
-                                            "enable_automatic_removal" => {
-                                                self.automatic_removal = true;
-                                                self.popup_state = PopupState::Info { message: "Automatic removal enabled. Old artifacts will be cleaned up after scans.".to_string() };
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                                PopupCommand::OpenExcludedPaths => {
-                                    self.popup_state = PopupState::new_excluded_paths(
-                                        self.config.excluded_paths.clone(),
-                                    );
+        if event::poll(Duration::from_millis(100)).unwrap_or(false)
+            && let Ok(event) = event::read()
+        {
+            match event {
+                Event::Resize(_, _) => {
+                    // Terminal was resized, UI will redraw automatically on next loop
+                }
+                Event::Key(key) => {
+                    // Handle popup first
+                    if let Some(cmd) = self.popup_state.handle_key(&key) {
+                        match cmd {
+                            PopupCommand::OpenInput { title, initial } => {
+                                let initial = if title == "Retention Days" {
+                                    self.config.retention_days.to_string()
+                                } else {
+                                    initial
+                                };
+                                self.popup_state = PopupState::new_input(title, initial);
+                            }
+                            PopupCommand::OpenDirBrowse => {
+                                self.popup_state = PopupState::new_dir_browse();
+                            }
+                            PopupCommand::ToggleRemoval => {
+                                if !self.automatic_removal {
+                                    // Show warning when enabling automatic removal
+                                    let message = "⚠️  AUTOMATIC REMOVAL WILL DELETE OLD ARTIFACTS\n\nPlease verify your build directories in the list above.\nAny directories matching common build paths older than\nretention days will be permanently deleted.\n\nEnable automatic removal? (Enter: Yes, Esc: No)".to_string();
+                                    let action = "enable_automatic_removal".to_string();
+                                    self.popup_state =
+                                        PopupState::ConfirmAction { message, action };
+                                } else {
+                                    // Disabling is safe, just toggle
+                                    self.automatic_removal = false;
                                 }
                             }
-                        } else if matches!(self.popup_state, PopupState::None) {
-                            // Main keys only when no popup
-                            match key.code {
-                                KeyCode::Char('D')
-                                    if key.modifiers.contains(KeyModifiers::SHIFT) =>
+                            PopupCommand::SetValue { key, value } => {
+                                if key == "Retention Days" {
+                                    if let Ok(days) = value.parse::<u32>() {
+                                        self.config.retention_days = days;
+                                    }
+                                } else if key == "Scan Path" {
+                                    self.config.scan_paths = vec![value];
+                                } else if key == "Enter sudo password"
+                                    && let Some(action) = self.pending_action.take()
                                 {
-                                    self.popup_state = PopupState::new_clear_all_confirmation();
-                                }
-                                KeyCode::Enter => {
-                                    if self.focused_panel == 0 {
-                                        self.popup_state = PopupState::new_artifact_actions();
-                                    } else if self.focused_panel == 3 {
-                                        self.popup_state = PopupState::new_settings_list();
+                                    if action == "delete" {
+                                        let path = self.artifacts[self.selected].clone();
+                                        let password = value.clone();
+
+                                        // Try the deletion synchronously to check if it succeeds
+                                        if Self::delete_with_sudo_blocking(&path, Some(&password)) {
+                                            self.artifacts.remove(self.selected);
+                                            if self.selected >= self.artifacts.len()
+                                                && self.selected > 0
+                                            {
+                                                self.selected -= 1;
+                                            }
+                                            // Update DB in background
+                                            let pool = self.logger.pool.clone();
+                                            tokio::spawn(async move {
+                                                let _ = sqlx::query(
+                                                    "DELETE FROM builds WHERE artifact_path = $1",
+                                                )
+                                                .bind(&path)
+                                                .execute(&pool)
+                                                .await;
+                                            });
+                                            self.popup_state = PopupState::Info {
+                                                message: "Artifact deleted successfully."
+                                                    .to_string(),
+                                            };
+                                        } else {
+                                            self.popup_state = PopupState::Info { message: "Deletion failed - please check permissions or try again.".to_string() };
+                                        }
+                                    } else if action == "clear_all" {
+                                        let failed_paths = self.pending_failed_paths.clone();
+                                        self.pending_failed_paths.clear();
+                                        let password = value.clone();
+
+                                        let mut all_success = true;
+                                        for path in &failed_paths {
+                                            if !Self::delete_with_sudo_blocking(
+                                                path,
+                                                Some(&password),
+                                            ) {
+                                                all_success = false;
+                                            }
+                                        }
+
+                                        if all_success {
+                                            self.artifacts.clear();
+                                            let pool = self.logger.pool.clone();
+                                            tokio::spawn(async move {
+                                                let _ = sqlx::query("DELETE FROM builds")
+                                                    .execute(&pool)
+                                                    .await;
+                                            });
+                                            self.popup_state = PopupState::Info {
+                                                message: "All builds cleared successfully."
+                                                    .to_string(),
+                                            };
+                                        } else {
+                                            self.popup_state = PopupState::Info { message: "Some deletions failed - please check permissions.".to_string() };
+                                        }
                                     }
                                 }
-                                KeyCode::Char('q') => self.should_quit = true,
-                                KeyCode::Tab => self.focused_panel = (self.focused_panel + 1) % 5,
-                                KeyCode::Char('s') => {
+                                // Save config after changes
+                                save_config(&self.config).ok();
+                            }
+                            PopupCommand::DeleteArtifact => {
+                                self.popup_state = PopupState::new_confirm_action(
+                                    "Delete this artifact?".to_string(),
+                                    "delete".to_string(),
+                                );
+                            }
+                            PopupCommand::RebuildArtifact => {
+                                self.popup_state = PopupState::new_confirm_action(
+                                    "Rebuild this project?".to_string(),
+                                    "rebuild".to_string(),
+                                );
+                            }
+                            PopupCommand::ClearAllBuilds => {
+                                self.clear_all_builds().await;
+                            }
+                            PopupCommand::ConfirmAction { action } => {
+                                if action.starts_with("remove_excluded:") {
+                                    let path = action
+                                        .strip_prefix("remove_excluded:")
+                                        .unwrap_or("")
+                                        .to_string();
+                                    self.config.excluded_paths.retain(|p| p != &path);
+                                    save_config(&self.config).ok();
+                                    self.popup_state = PopupState::Info {
+                                        message: "Removed from exclusion list. Rescanning..."
+                                            .to_string(),
+                                    };
                                     if !self.scanning {
                                         self.trigger_scan().await;
                                     }
-                                }
-                                KeyCode::Char('d') => {
-                                    self.popup_state = PopupState::new_confirm_action(
-                                        "Delete this artifact?".to_string(),
-                                        "delete".to_string(),
-                                    )
-                                }
-                                KeyCode::Char('x') | KeyCode::Char('X') => {
-                                    if self.focused_panel == 0
-                                        && self.selected < self.artifacts.len()
-                                    {
-                                        self.popup_state = PopupState::new_confirm_action(
-                                            "Exclude this path from scanning?".to_string(),
-                                            "exclude".to_string(),
-                                        );
+                                } else {
+                                    match action.as_str() {
+                                        "delete" => {
+                                            self.popup_state = PopupState::new_progress(
+                                                "Deleting artifact...".to_string(),
+                                            );
+                                            self.delete_selected().await;
+                                            // delete_selected sets the popup_state
+                                        }
+                                        "rebuild" => {
+                                            self.rebuild_selected();
+                                            self.popup_state = PopupState::new_progress(
+                                                "Rebuilding project...".to_string(),
+                                            );
+                                        }
+                                        "exclude" => {
+                                            if self.selected < self.artifacts.len() {
+                                                let path = self.artifacts[self.selected].clone();
+                                                self.config.excluded_paths.push(path);
+                                                self.artifacts.remove(self.selected);
+                                                if self.selected >= self.artifacts.len()
+                                                    && self.selected > 0
+                                                {
+                                                    self.selected -= 1;
+                                                }
+                                                save_config(&self.config).ok();
+                                                self.popup_state = PopupState::Info {
+                                                    message: "Path added to exclusion list."
+                                                        .to_string(),
+                                                };
+                                            }
+                                        }
+                                        "enable_automatic_removal" => {
+                                            self.automatic_removal = true;
+                                            self.popup_state = PopupState::Info { message: "Automatic removal enabled. Old artifacts will be cleaned up after scans.".to_string() };
+                                        }
+                                        _ => {}
                                     }
                                 }
-                                KeyCode::Char('r') => self.rebuild_selected(),
-                                KeyCode::Char('h') => self.load_history().await,
-                                KeyCode::Char('e') => {
-                                    self.popup_state = PopupState::new_settings_list()
-                                }
-                                KeyCode::Char('l') => {
-                                    self.popup_state =
-                                        PopupState::new_logs_popup(Arc::clone(&self.logs))
-                                }
-                                KeyCode::Up | KeyCode::PageUp => {
-                                    if self.focused_panel == 0 && self.selected > 0 {
-                                        self.selected -= 1;
-                                    } else if self.focused_panel == 2 && self.chart_selected > 0 {
-                                        self.chart_selected -= 1;
-                                    }
-                                }
-                                KeyCode::Down | KeyCode::PageDown => {
-                                    if self.focused_panel == 0
-                                        && self.selected < self.artifacts.len().saturating_sub(1)
-                                    {
-                                        self.selected += 1;
-                                    } else if self.focused_panel == 2
-                                        && self.chart_selected
-                                            < self.chart_data.len().saturating_sub(1)
-                                    {
-                                        self.chart_selected += 1;
-                                    }
-                                }
-                                _ => {}
                             }
-                        } else {
-                            // Popup open, only allow quit
-                            if key.code == KeyCode::Char('q') {
-                                self.should_quit = true;
+                            PopupCommand::OpenExcludedPaths => {
+                                self.popup_state = PopupState::new_excluded_paths(
+                                    self.config.excluded_paths.clone(),
+                                );
                             }
                         }
+                    } else if matches!(self.popup_state, PopupState::None) {
+                        // Main keys only when no popup
+                        match key.code {
+                            KeyCode::Char('D') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                                self.popup_state = PopupState::new_clear_all_confirmation();
+                            }
+                            KeyCode::Enter => {
+                                if self.focused_panel == 0 {
+                                    self.popup_state = PopupState::new_artifact_actions();
+                                } else if self.focused_panel == 3 {
+                                    self.popup_state = PopupState::new_settings_list();
+                                }
+                            }
+                            KeyCode::Char('q') => self.should_quit = true,
+                            KeyCode::Tab => self.focused_panel = (self.focused_panel + 1) % 5,
+                            KeyCode::Char('s') => {
+                                if !self.scanning {
+                                    self.trigger_scan().await;
+                                }
+                            }
+                            KeyCode::Char('d') => {
+                                self.popup_state = PopupState::new_confirm_action(
+                                    "Delete this artifact?".to_string(),
+                                    "delete".to_string(),
+                                )
+                            }
+                            KeyCode::Char('x') | KeyCode::Char('X') => {
+                                if self.focused_panel == 0 && self.selected < self.artifacts.len() {
+                                    self.popup_state = PopupState::new_confirm_action(
+                                        "Exclude this path from scanning?".to_string(),
+                                        "exclude".to_string(),
+                                    );
+                                }
+                            }
+                            KeyCode::Char('r') => self.rebuild_selected(),
+                            KeyCode::Char('h') => self.load_history().await,
+                            KeyCode::Char('e') => {
+                                self.popup_state = PopupState::new_settings_list()
+                            }
+                            KeyCode::Char('l') => {
+                                self.popup_state =
+                                    PopupState::new_logs_popup(Arc::clone(&self.logs))
+                            }
+                            KeyCode::Up | KeyCode::PageUp => {
+                                if self.focused_panel == 0 && self.selected > 0 {
+                                    self.selected -= 1;
+                                } else if self.focused_panel == 2 && self.chart_selected > 0 {
+                                    self.chart_selected -= 1;
+                                }
+                            }
+                            KeyCode::Down | KeyCode::PageDown => {
+                                if self.focused_panel == 0
+                                    && self.selected < self.artifacts.len().saturating_sub(1)
+                                {
+                                    self.selected += 1;
+                                } else if self.focused_panel == 2
+                                    && self.chart_selected < self.chart_data.len().saturating_sub(1)
+                                {
+                                    self.chart_selected += 1;
+                                }
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        // Popup open, only allow quit
+                        if key.code == KeyCode::Char('q') {
+                            self.should_quit = true;
+                        }
                     }
-                    _ => {
-                        // Ignore other events
-                    }
+                }
+                _ => {
+                    // Ignore other events
                 }
             }
         }
@@ -574,11 +568,8 @@ impl App {
                 .iter()
                 .enumerate()
                 .map(|(i, (name, size))| {
-                    let bar_len = if max_size > 0 {
-                        (size * available_width / max_size) as usize
-                    } else {
-                        0
-                    };
+                    let bar_len =
+                        (size * available_width).checked_div(max_size).unwrap_or(0) as usize;
                     let bar = "█".repeat(bar_len);
                     let size_mb = size / 1_000_000;
                     let color = colors[i % colors.len()];

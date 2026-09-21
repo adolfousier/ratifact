@@ -28,13 +28,13 @@ pub fn load_config() -> Config {
         == "true";
 
     // Try to load from src/config/config.toml
-    if let Ok(content) = fs::read_to_string("src/config/config.toml") {
-        if let Ok(mut config) = toml::from_str::<Config>(&content) {
-            // Override database_url and debug_logs_enabled from env
-            config.database_url = database_url;
-            config.debug_logs_enabled = debug_logs_enabled;
-            return config;
-        }
+    if let Ok(content) = fs::read_to_string("src/config/config.toml")
+        && let Ok(mut config) = toml::from_str::<Config>(&content)
+    {
+        // Override database_url and debug_logs_enabled from env
+        config.database_url = database_url;
+        config.debug_logs_enabled = debug_logs_enabled;
+        return config;
     }
 
     Config {
