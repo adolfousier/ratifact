@@ -1,7 +1,9 @@
 // DB tests
 
 use crate::db::connection::establish_connection;
-use crate::db::schema::{create_tables, delete_old_builds_from_db, get_old_artifact_paths};
+use crate::db::schema::create_tables;
+#[cfg(feature = "sqlite")]
+use crate::db::schema::{delete_old_builds_from_db, get_old_artifact_paths};
 
 #[cfg(feature = "postgres")]
 use sqlx::PgPool;
