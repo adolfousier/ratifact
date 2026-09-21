@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.16] - 2026-09-21
+
+### Added
+
+- **SQLite as the default database backend** - ratifact now works out of the box with a local `ratifact.db` file; no PostgreSQL server or Docker Compose required. The Postgres backend remains available via `cargo build --no-default-features --features postgres`
+- **Prebuilt release binaries** - GitHub releases now ship stripped, checksummed archives for Linux (amd64/arm64), macOS (amd64/arm64) and Windows (amd64); macOS builds run on our own self-hosted runner
+
+### Changed
+
+- **Compile-time backend guards** - enabling both `sqlite` and `postgres` features (or neither) now fails immediately with a clear error instead of duplicate-definition compiler noise
+
 ## [0.1.15] - 2025-11-28
 
 ### Added
